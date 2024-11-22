@@ -1,0 +1,8 @@
+{
+  "name": "mony monitors",
+  "description": "Turn on/off multiple monitors",
+  "uuid": "gameonhigh@gmail.com",
+  "shell-version": [
+    "46"
+  ]
+}
