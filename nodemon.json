@@ -1,0 +1,6 @@
+{
+	"watch": ["."],
+	"ext": "js,json,css,html",
+	"exec": "dbus-run-session -- gnome-shell --nested --wayland",
+	"delay": "1000"
+}
