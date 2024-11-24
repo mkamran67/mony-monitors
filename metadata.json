@@ -1,7 +1,7 @@
 {
-  "name": "mony monitors",
-  "description": "Turn on/off multiple monitors",
-  "uuid": "gameonhigh@gmail.com",
+  "name": "Control Monitors",
+  "description": "Turns ON/OFF monitors",
+  "uuid": "mkamran1967@gmail.com",
   "shell-version": [
     "46"
   ]
