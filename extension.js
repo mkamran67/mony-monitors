@@ -67,7 +67,90 @@ const DisplayMenu = GObject.registerClass(
 			}
 		}
 
+		_convertLogicalMonitors(currentLogicalMonitors, monitors) {
+			const newLogicalMonitors = [];
+
+			for (const monitor of currentLogicalMonitors) {
+				const [x, y, scale, transform, primary, monitorSpecs] = monitor;
+
+				// Convert monitor specs to new format
+				const newMonitorSpecs = monitorSpecs.map((spec) => {
+					const [connector, vendor, product, serial] = spec;
+
+					// Find current mode ID from monitors array
+					const monitorInfo = monitors.find((m) => {
+						const [info] = m;
+						const [mConnector, mVendor, mProduct, mSerial] = info;
+						return connector === mConnector;
+					});
+
+					// Get current mode ID
+					const currentModeId = monitorInfo?.[1].find((mode) => mode[6]?.["is-current"])?.[0] || "";
+
+					return [
+						connector, // connector name
+						currentModeId, // mode ID
+						{}, // properties
+					];
+				});
+
+				// Create new logical monitor config
+				const newMonitorConfig = [
+					x, // x position
+					y, // y position
+					scale, // scale
+					transform, // transform
+					primary, // primary flag
+					newMonitorSpecs, // monitor specs in new format
+				];
+
+				newLogicalMonitors.push(newMonitorConfig);
+			}
+
+			return newLogicalMonitors;
+		}
+
 		async _updateMonitorConfig() {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+				const { serial, monitors } = this._originalResources;
+
+				const newMonitorConfig = this._convertLogicalMonitors(this._activeStack, monitors);
+
+				const params = new GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", [
+					serial, // u: serial
+					1, // u: method (temporary)
+					newMonitorConfig, // a(...): logical monitors array
+					{}, // a{sv}: properties
+				]);
+
+				// a(iiduba(ssa{sv}))
+				await new Promise((resolve, reject) => {
+					this._proxy.call(
+						"ApplyMonitorsConfig",
+						params,
+						Gio.DBusCallFlags.NONE,
+						-1,
+						null,
+						(proxy, result) => {
+							try {
+								proxy.call_finish(result);
+								resolve();
+							} catch (e) {
+								console.log("file: extension.js:102 -> e:", e);
+								reject(e);
+							}
+						}
+					);
+				});
+			} catch (error) {
+				logError(error);
+			}
+		}
+
+		async old_updateMonitorConfig() {
 			try {
 				if (!this._proxy) {
 					throw new Error("No Proxy");
@@ -76,24 +159,9 @@ const DisplayMenu = GObject.registerClass(
 				console.log("file: extension.js:76 -> monitors:", monitors);
 				console.log("file: extension.js:77 -> this._activeStack:", this._activeStack);
 
-				// 	[
-				//     0, x
-				//     0, y
-				//     1, scale
-				//     0, transform
-				//     true, primary
-				//     [
-				//         [
-				//             "LVDS1",
-				//             "MetaProducts Inc.",
-				//             "MetaMonitor",
-				//             "0xC0FFEE-1"
-				//         ]
-				//     ],
-				//     {}
-				// ],
-
 				await new Promise((resolve, reject) => {
+					// <arg name="logical_monitors" direction="in" type="a(iiduba(ssa{sv}))" /> // ApplyMonitorsConfig
+					// <arg name="logical_monitors" direction="out" type="a(iiduba(ssss)a{sv})" /> //  GetCurrentState
 					this._proxy.call(
 						"ApplyMonitorsConfig",
 						new GLib.Variant("u", serial),
