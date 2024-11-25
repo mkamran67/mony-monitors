@@ -19,6 +19,7 @@ import GObject from "gi://GObject";
 import St from "gi://St";
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
+// import Meta from "gi://Meta"; // Useless for turning off/on monitors aka not for it.
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as QuickSettings from "resource:///org/gnome/shell/ui/quickSettings.js";
@@ -41,9 +42,29 @@ const DisplayMenu = GObject.registerClass(
 
 			// Add a section of items to the menu
 			this._itemsSection = new PopupMenu.PopupMenuSection();
+			// TODO -> add a listener for monitor changes
 			this._updateMonitors();
 
 			this.menu.addMenuItem(this._itemsSection);
+
+			this._setup();
+		}
+
+		async _setup() {
+			// 1. Setup Mutter Proxy
+			await this._setupMutterProxy();
+			if (this._proxy) {
+				console.log(`Proxy has been setup.`);
+			}
+
+			// 2. Get Monitors
+			this._DBusMonitors = await this.getResources();
+
+			// 3. Update SetItems with new Monitor information
+			if (this._DBusMonitors) {
+				console.log(`Got Monitors from DBus`);
+				await this._updateMonitorsWithDBus();
+			}
 		}
 
 		_updateMonitors() {
@@ -61,46 +82,152 @@ const DisplayMenu = GObject.registerClass(
 
 				// Create a toggle switch menu item
 				const menuItem = new PopupMenu.PopupSwitchMenuItem(
-					`Monitor ${index + 1}: ${monitor.width}x${monitor.height} ${isPrimary ? "Primary" : ""}`,
+					`${isPrimary ? "Primary" : "Monitor"} ${index + 1}: ${monitor.width}x${monitor.height} `,
 					isActive
 				);
 
-				menuItem.connect("toggled", () => {
-					this._toggleMonitor(index, !isActive);
+				menuItem.connect("toggled", async () => {
+					await this._toggleMonitor(index, !isActive);
 				});
 
 				this._itemsSection.addMenuItem(menuItem);
 			});
 		}
 
-		_toggleMonitor(monitorIndex, enable) {
-			try {
-				const proxy = Gio.DBusProxy.new_for_bus_sync(
-					Gio.BusType.SESSION,
-					Gio.DBusProxyFlags.NONE,
-					null,
-					"org.gnome.Mutter.DisplayConfig",
-					"/org/gnome/Mutter/DisplayConfig",
-					"org.gnome.Mutter.DisplayConfig",
-					null
+		async _updateMonitorsWithDBus() {
+			const { outputs, crtcs } = this._DBusMonitors;
+
+			// // Update list
+			const primaryMonitorIndex = global.display.get_primary_monitor();
+			this._itemsSection.removeAll();
+
+			outputs.forEach((output, index) => {
+				const [id, winsysId, currentCrtc, possibleCrtcs, name, validModes, clones, properties] =
+					output;
+
+				// const isActive = monitor.geometry.width
+				const isActive = currentCrtc !== -1;
+				const isPrimary = primaryMonitorIndex == id;
+
+				// Create a toggle switch menu item
+				const menuItem = new PopupMenu.PopupSwitchMenuItem(
+					`${name} - ${index + 1} ${isPrimary ? ": Primary" : ""} `,
+					isActive
 				);
 
-				// const [serial, monitors, logicalMonitors] = proxy.GetCurrentState();
+				menuItem.connect("toggled", () => {
+					// crtcs for turning it off
+					this._toggleMonitor(currentCrtc, !isActive);
+				});
 
-				// Update the enabled staste of the selected monitor
-				// monitors[monitorIndex][3]["is-enabled"] = new GLib.Variant("b", enable);
+				this._itemsSection.addMenuItem(menuItem);
+			});
+		}
 
-				// // Apply the new config
-				// proxy.AppplyMonitorsConfig(
-				// 	serial,
-				// 	0, // Flags
-				// 	monitors,
-				// 	logicalMonitors
-				// );
+		async getResources() {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
 
-				const result = proxy.call_sync("GetCurrentState", null, Gio.DBusCallFlags.NONE, -1, null);
-			} catch (err) {
-				console.error(`Monitor Toggle Failed : ${err}`);
+				const getMonitorsPromise = new Promise((resolve, reject) => {
+					// First get the current configuration
+					this._proxy.call(
+						"GetResources",
+						null,
+						Gio.DBusCallFlags.NONE,
+						-1,
+						null,
+						(proxy, result) => {
+							try {
+								const [serial, crtcs, outputs, modes] = proxy.call_finish(result).deep_unpack();
+								resolve({ outputs, crtcs, serial });
+							} catch (e) {
+								reject(e);
+							}
+						}
+					);
+				});
+				return await getMonitorsPromise;
+			} catch (error) {
+				console.log("file: extension.js:160 -> error:", error);
+			}
+		}
+
+		async _toggleMonitor(currentCrtc, toEnable) {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+
+				const crtcConfig = [
+					[
+						currentCrtc, // CRTC ID
+						-1, // mode (-1 = disabled)
+						0, // x
+						0, // y
+						0, // transform
+						[], // no outputs
+						{}, // properties
+					],
+				];
+
+				const toggleMonitor = new Promise((resolve, reject) => {
+					// Apply the configuration
+					this._proxy.call(
+						"ApplyConfiguration",
+						new GLib.Variant("(uba(uiiiuaua{sv})a(ua{sv}))", [
+							this._DBusMonitors.serial,
+							false, // not persistent
+							crtcConfig,
+							[], // no output property changes
+						]),
+						Gio.DBusCallFlags.NONE,
+						-1,
+						null,
+						(proxy, result) => {
+							try {
+								resolve(result);
+							} catch (e) {
+								reject(e);
+							}
+						}
+					);
+				});
+				await toggleMonitor;
+			} catch (error) {
+				console.log("file: extension.js:201 -> error:", error);
+			}
+		}
+
+		async _setupMutterProxy() {
+			try {
+				this._proxy = null;
+
+				const myProxyPromise = new Promise((resolve, reject) => {
+					Gio.DBusProxy.new_for_bus(
+						Gio.BusType.SESSION,
+						Gio.DBusProxyFlags.NONE,
+						null,
+						"org.gnome.Mutter.DisplayConfig",
+						"/org/gnome/Mutter/DisplayConfig",
+						"org.gnome.Mutter.DisplayConfig",
+						null,
+						(source, result) => {
+							try {
+								this._proxy = Gio.DBusProxy.new_for_bus_finish(result);
+								resolve(this._proxy);
+							} catch (e) {
+								console.log("file: extension.js:275 -> e:", e);
+								reject(e);
+							}
+						}
+					);
+				});
+
+				return await myProxyPromise;
+			} catch (error) {
+				console.error(error);
 			}
 		}
 	}
