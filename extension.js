@@ -57,18 +57,171 @@ const DisplayMenu = GObject.registerClass(
 				console.log(`Proxy has been setup.`);
 			}
 
-			// 2. Get Monitors
-			this._DBusMonitors = await this.getResources();
+			// 2. Get Monitors -> save to an unchanging array
+			this._originalResources = await this.getResources();
 
 			// 3. Update SetItems with new Monitor information
-			if (this._DBusMonitors) {
-				console.log(`Got Monitors from DBus`);
+			if (this._originalResources) {
+				this._monitorResources = { ...this._originalResources };
 				await this._updateMonitorsWithDBus();
 			}
 		}
 
+		async _updateMonitorConfig() {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+				const { serial, monitors } = this._originalResources;
+				console.log("file: extension.js:76 -> monitors:", monitors);
+				console.log("file: extension.js:77 -> this._activeStack:", this._activeStack);
+
+				// 	[
+				//     0, x
+				//     0, y
+				//     1, scale
+				//     0, transform
+				//     true, primary
+				//     [
+				//         [
+				//             "LVDS1",
+				//             "MetaProducts Inc.",
+				//             "MetaMonitor",
+				//             "0xC0FFEE-1"
+				//         ]
+				//     ],
+				//     {}
+				// ],
+
+				await new Promise((resolve, reject) => {
+					this._proxy.call(
+						"ApplyMonitorsConfig",
+						new GLib.Variant("u", serial),
+						new GLib.Variant("u", 1),
+						new GLib.Variant("a(iiduba(ssa{sv}))", this._activeStack),
+						new GLib.Variant("a{sv}", {}),
+						(proxy, result) => {
+							try {
+								proxy.call_finish(result);
+								resolve();
+							} catch (e) {
+								console.log("file: extension.js:102 -> e:", e);
+								reject(e);
+							}
+						}
+					);
+				});
+			} catch (error) {
+				logError(error);
+			}
+		}
+
+		// Takes a monitor and turns it on or off
+		// if monitor is currently in the active stack
+		// deactivate it
+		// else if it's not in the active stack
+		// activate it
+		async _toggleMonitor(currentMonitor) {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+				const isCurrentlyActive = this._isMonitorCurrentlyActive(currentMonitor);
+
+				// if currentlyActive -> turn off monitor and update list.
+				if (isCurrentlyActive) {
+					// remove from activelist
+					this._activeStack = this._activeStack.filter(
+						(actMonitor) => !this._shallowCompare(actMonitor, currentMonitor)
+					);
+				} else {
+					// add to activelist
+					this._activeStack.push(currentMonitor);
+				}
+
+				// Update monitors
+				this._updateMonitorConfig();
+			} catch (error) {
+				logError(error);
+			}
+		}
+
+		_isMonitorCurrentlyActive(monitor) {
+			for (const currMonitor of this._activeStack) {
+				const isEqual = this._shallowCompare(monitor, currMonitor);
+
+				if (isEqual) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		async getResources() {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+
+				return new Promise((resolve, reject) => {
+					this._proxy.call(
+						"GetCurrentState",
+						null,
+						Gio.DBusCallFlags.NONE,
+						-1,
+						null,
+						(proxy, result) => {
+							try {
+								const [serial, monitors, logical_monitors, properties] = proxy
+									.call_finish(result)
+									.deep_unpack();
+								resolve({ serial, monitors, logical_monitors, properties });
+							} catch (e) {
+								reject(e);
+							}
+						}
+					);
+				});
+			} catch (error) {
+				logError(error);
+			}
+		}
+
+		// This should run only once, later we update with stored values.
+		async _updateMonitorsWithDBus() {
+			try {
+				this._itemsSection.removeAll();
+
+				const { logical_monitors, monitors } = this._originalResources;
+				this._activeStack = [...logical_monitors]; // inital save of active monitors
+
+				// For now lets use logical_monitors and store them
+				logical_monitors.forEach((monitor, index) => {
+					const [x, y, scale, transform, isPrimary, monitorProperties, props] = monitor;
+					const possibleName = monitorProperties[0][0];
+					const isActive = true;
+
+					// Create a toggle switch menu item
+					const menuItem = new PopupMenu.PopupSwitchMenuItem(
+						`${possibleName || "Monitor"} : ${index + 1} ${isPrimary ? " (Primary)" : ""} `,
+						isActive
+					);
+
+					menuItem.connect("toggled", async () => {
+						await this._toggleMonitor(monitor); // This will turn off the monitor and keep the button there
+					});
+
+					this._itemsSection.addMenuItem(menuItem);
+				});
+			} catch (error) {
+				console.log("file: extension.js:97 -> error:", error);
+			}
+		}
+
 		_updateMonitors() {
-			// Clear Existing items
+			// TODO -> DELETE
+			// Clear Existing items -> Dummy Monitors really...
 			this._itemsSection.removeAll();
 
 			// Get monitors from Main.layoutManager
@@ -92,112 +245,6 @@ const DisplayMenu = GObject.registerClass(
 
 				this._itemsSection.addMenuItem(menuItem);
 			});
-		}
-
-		async _updateMonitorsWithDBus() {
-			const { outputs, crtcs } = this._DBusMonitors;
-
-			// // Update list
-			const primaryMonitorIndex = global.display.get_primary_monitor();
-			this._itemsSection.removeAll();
-
-			outputs.forEach((output, index) => {
-				const [id, winsysId, currentCrtc, possibleCrtcs, name, validModes, clones, properties] =
-					output;
-
-				// const isActive = monitor.geometry.width
-				const isActive = currentCrtc !== -1;
-				const isPrimary = primaryMonitorIndex == id;
-
-				// Create a toggle switch menu item
-				const menuItem = new PopupMenu.PopupSwitchMenuItem(
-					`${name} - ${index + 1} ${isPrimary ? ": Primary" : ""} `,
-					isActive
-				);
-
-				menuItem.connect("toggled", () => {
-					// crtcs for turning it off
-					this._toggleMonitor(currentCrtc, !isActive);
-				});
-
-				this._itemsSection.addMenuItem(menuItem);
-			});
-		}
-
-		async getResources() {
-			try {
-				if (!this._proxy) {
-					throw new Error("No Proxy");
-				}
-
-				const getMonitorsPromise = new Promise((resolve, reject) => {
-					// First get the current configuration
-					this._proxy.call(
-						"GetResources",
-						null,
-						Gio.DBusCallFlags.NONE,
-						-1,
-						null,
-						(proxy, result) => {
-							try {
-								const [serial, crtcs, outputs, modes] = proxy.call_finish(result).deep_unpack();
-								resolve({ outputs, crtcs, serial });
-							} catch (e) {
-								reject(e);
-							}
-						}
-					);
-				});
-				return await getMonitorsPromise;
-			} catch (error) {
-				console.log("file: extension.js:160 -> error:", error);
-			}
-		}
-
-		async _toggleMonitor(currentCrtc, toEnable) {
-			try {
-				if (!this._proxy) {
-					throw new Error("No Proxy");
-				}
-
-				const crtcConfig = [
-					[
-						currentCrtc, // CRTC ID
-						-1, // mode (-1 = disabled)
-						0, // x
-						0, // y
-						0, // transform
-						[], // no outputs
-						{}, // properties
-					],
-				];
-
-				const toggleMonitor = new Promise((resolve, reject) => {
-					// Apply the configuration
-					this._proxy.call(
-						"ApplyConfiguration",
-						new GLib.Variant("(uba(uiiiuaua{sv})a(ua{sv}))", [
-							this._DBusMonitors.serial,
-							false, // not persistent
-							crtcConfig,
-							[], // no output property changes
-						]),
-						Gio.DBusCallFlags.NONE,
-						-1,
-						null,
-						(proxy, result) => {
-							try {
-								resolve(result);
-							} catch (e) {
-								reject(e);
-							}
-						}
-					);
-				});
-				await toggleMonitor;
-			} catch (error) {
-				console.log("file: extension.js:201 -> error:", error);
-			}
 		}
 
 		async _setupMutterProxy() {
@@ -230,9 +277,20 @@ const DisplayMenu = GObject.registerClass(
 				console.error(error);
 			}
 		}
+
+		_shallowCompare(arr1, arr2) {
+			if (arr1.length !== arr2.length) {
+				return false;
+			}
+			for (let i = 0; i < arr1.length; i++) {
+				if (arr1[i] !== arr2[i]) {
+					return false;
+				}
+			}
+			return true;
+		}
 	}
 );
-
 const MonyMonitorsIndicator = GObject.registerClass(
 	// The SystemIndicator class is the container for our ExampleToggle
 	class MonyMonitorsIndicator extends SystemIndicator {
