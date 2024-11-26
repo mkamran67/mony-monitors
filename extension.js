@@ -16,15 +16,14 @@
 //  * SPDX-License-Identifier: GPL-2.0-or-later
 //  */
 import GObject from "gi://GObject";
-import St from "gi://St";
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
-// import Meta from "gi://Meta"; // Useless for turning off/on monitors aka not for it.
+// import Meta from "gi://Meta"; // Useless for turning off/on monitors aka not for it, will use for modifications
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as QuickSettings from "resource:///org/gnome/shell/ui/quickSettings.js";
 import { Extension, gettext as _ } from "resource:///org/gnome/shell/extensions/extension.js";
-import { QuickToggle, SystemIndicator } from "resource:///org/gnome/shell/ui/quickSettings.js";
+import { SystemIndicator } from "resource:///org/gnome/shell/ui/quickSettings.js";
 
 const DisplayMenu = GObject.registerClass(
 	class DisplayMenu extends QuickSettings.QuickMenuToggle {
@@ -158,40 +157,6 @@ const DisplayMenu = GObject.registerClass(
 
 				// Refresh Serial
 				this._originalResources = await this.getResources();
-			} catch (error) {
-				logError(error);
-			}
-		}
-
-		async old_updateMonitorConfig() {
-			try {
-				if (!this._proxy) {
-					throw new Error("No Proxy");
-				}
-				const { serial, monitors } = this._originalResources;
-				console.log("file: extension.js:76 -> monitors:", monitors);
-				console.log("file: extension.js:77 -> this._activeStack:", this._activeStack);
-
-				await new Promise((resolve, reject) => {
-					// <arg name="logical_monitors" direction="in" type="a(iiduba(ssa{sv}))" /> // ApplyMonitorsConfig
-					// <arg name="logical_monitors" direction="out" type="a(iiduba(ssss)a{sv})" /> //  GetCurrentState
-					this._proxy.call(
-						"ApplyMonitorsConfig",
-						new GLib.Variant("u", serial),
-						new GLib.Variant("u", 1),
-						new GLib.Variant("a(iiduba(ssa{sv}))", this._activeStack),
-						new GLib.Variant("a{sv}", {}),
-						(proxy, result) => {
-							try {
-								proxy.call_finish(result);
-								resolve();
-							} catch (e) {
-								console.log("file: extension.js:102 -> e:", e);
-								reject(e);
-							}
-						}
-					);
-				});
 			} catch (error) {
 				logError(error);
 			}
@@ -372,6 +337,7 @@ const DisplayMenu = GObject.registerClass(
 		}
 	}
 );
+
 const MonyMonitorsIndicator = GObject.registerClass(
 	// The SystemIndicator class is the container for our ExampleToggle
 	class MonyMonitorsIndicator extends SystemIndicator {
