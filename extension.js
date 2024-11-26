@@ -89,11 +89,14 @@ const DisplayMenu = GObject.registerClass(
 						throw new Error("No modes found", monitorInfo?.[1][0]);
 					}
 					// Get current mode ID
-					const currentModeId =
+					let currentModeId =
 						monitorInfo?.[1].find((mode) => mode[6]?.["is-current"])?.[0] ||
-						monitorInfo?.[1].find((mode) => mode[6]?.["is-preferred"]?.[0]) ||
-						monitorInfo?.[1][monitorInfo?.[1].length - 1][0];
+						monitorInfo?.[1].find((mode) => mode[6]?.["is-preferred"])?.[0];
 
+					if (!currentModeId) {
+						currentModeId = monitorInfo?.[1][monitorInfo?.[1].length - 1][0];
+						console.error(`Couldn't find the right mode - Falling bhack to :`, currentModeId);
+					}
 					return [
 						connector, // connector name
 						currentModeId, // mode ID
@@ -105,7 +108,7 @@ const DisplayMenu = GObject.registerClass(
 				const newMonitorConfig = [
 					x, // x position
 					y, // y position
-					1, // scale
+					scale, // scale
 					transform, // transform
 					primary, // primary flag
 					newMonitorSpecs, // monitor specs in new format
@@ -125,6 +128,7 @@ const DisplayMenu = GObject.registerClass(
 				const { serial, monitors } = this._originalResources;
 				const newMonitorConfig = this._convertLogicalMonitors(this._activeStack, monitors);
 
+				// TODO -> add settings for temporary or permanent
 				const params = new GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", [
 					serial, // u: serial
 					1, // u: method (temporary)
