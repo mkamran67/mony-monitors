@@ -84,8 +84,15 @@ const DisplayMenu = GObject.registerClass(
 						return connector === mConnector;
 					});
 
+					// if no modes exist -> throw
+					if (monitorInfo?.[1][0].length == 0) {
+						throw new Error("No modes found", monitorInfo?.[1][0]);
+					}
 					// Get current mode ID
-					const currentModeId = monitorInfo?.[1].find((mode) => mode[6]?.["is-current"])?.[0] || "";
+					const currentModeId =
+						monitorInfo?.[1].find((mode) => mode[6]?.["is-current"])?.[0] ||
+						monitorInfo?.[1].find((mode) => mode[6]?.["is-preferred"]?.[0]) ||
+						monitorInfo?.[1][monitorInfo?.[1].length - 1][0];
 
 					return [
 						connector, // connector name
@@ -98,7 +105,7 @@ const DisplayMenu = GObject.registerClass(
 				const newMonitorConfig = [
 					x, // x position
 					y, // y position
-					scale, // scale
+					1, // scale
 					transform, // transform
 					primary, // primary flag
 					newMonitorSpecs, // monitor specs in new format
@@ -116,7 +123,6 @@ const DisplayMenu = GObject.registerClass(
 					throw new Error("No Proxy");
 				}
 				const { serial, monitors } = this._originalResources;
-
 				const newMonitorConfig = this._convertLogicalMonitors(this._activeStack, monitors);
 
 				const params = new GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", [
@@ -145,6 +151,9 @@ const DisplayMenu = GObject.registerClass(
 						}
 					);
 				});
+
+				// Refresh Serial
+				this._originalResources = await this.getResources();
 			} catch (error) {
 				logError(error);
 			}
