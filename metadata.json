@@ -1,7 +1,8 @@
 {
-	"name": "Control Monitors",
-	"description": "Turns ON/OFF monitors",
-	"uuid": "mkamran1967@gmail.com",
+	"name": "Monitor Manager",
+	"description": "Let's you turn monitors ON/OFF",
+	"uuid": "monymonitor@gmail.com",
 	"shell-version": ["46"],
-	"version": "1.0"
+	"version": "1.0",
+	"settings-schema": "org.gnome.shell.extensions.monymonitors"
 }

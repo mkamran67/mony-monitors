@@ -18,7 +18,6 @@
 import GObject from "gi://GObject";
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
-// import Meta from "gi://Meta"; // Useless for turning off/on monitors aka not for it, will use for modifications
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as QuickSettings from "resource:///org/gnome/shell/ui/quickSettings.js";
@@ -27,8 +26,7 @@ import { SystemIndicator } from "resource:///org/gnome/shell/ui/quickSettings.js
 
 const DisplayMenu = GObject.registerClass(
 	class DisplayMenu extends QuickSettings.QuickMenuToggle {
-		// _init(extensionObject) {
-		_init() {
+		_init(extensionObject) {
 			super._init({
 				title: _("Displays"),
 				subtitle: _("Monitors"),
@@ -36,12 +34,18 @@ const DisplayMenu = GObject.registerClass(
 				toggleMode: true,
 			});
 
+			console.clear();
+
+			// Variables
+			this._monitorsChangedSignalId = 0;
+			this._settingsChangedId = 0;
+
 			// Add a header with an icon, title and optional subtitle.
 			this.menu.setHeader("monitor-pick-symbolic", _("Select Monitors"), _(""));
 
 			// Add a section of items to the menu
 			this._itemsSection = new PopupMenu.PopupMenuSection();
-			// TODO -> add a listener for monitor changes
+
 			this._updateMonitors();
 
 			this.menu.addMenuItem(this._itemsSection);
@@ -49,21 +53,50 @@ const DisplayMenu = GObject.registerClass(
 			this._setup();
 		}
 
+		async _onMainToggleClickHandler(isChecked) {
+			if (isChecked) {
+				// Turn on all monitors
+			} else {
+				// turn off all monitors
+			}
+		}
+
 		async _setup() {
 			// 1. Setup Mutter Proxy
 			await this._setupMutterProxy();
-			if (this._proxy) {
-				console.log(`Proxy has been setup.`);
+			if (!this._proxy) {
+				console.error("Mutter D-bus proxy setup failed.");
+				process.exit(1);
 			}
 
 			// 2. Get Monitors -> save to an unchanging array
 			this._originalResources = await this.getResources();
+
+			if (!this._originalResources) {
+				console.error("Failed to fetch resources");
+				process.exit(1);
+			} else {
+				console.log("🚀 ~ DisplayMenu ~ _setup ~ _originalResources:", this._originalResources);
+			}
 
 			// 3. Update SetItems with new Monitor information
 			if (this._originalResources) {
 				this._monitorResources = { ...this._originalResources };
 				await this._updateMonitorsWithDBus();
 			}
+
+			// 4. Listeners
+			this.connect("notify::checked", () => {
+				if (this.checked) {
+					// 1. When CHECKED all monitors are ON
+					console.log(`Checked`);
+				} else {
+					// 2. When UNCHECK all monitors EXCEPT PRIMARY are OFF
+					console.log(`Unchecked`);
+				}
+			});
+
+			// TODO -> add a listener for monitor changes
 		}
 
 		_convertLogicalMonitors(currentLogicalMonitors, monitors) {
@@ -157,36 +190,6 @@ const DisplayMenu = GObject.registerClass(
 
 				// Refresh Serial
 				this._originalResources = await this.getResources();
-			} catch (error) {
-				logError(error);
-			}
-		}
-
-		// Takes a monitor and turns it on or off
-		// if monitor is currently in the active stack
-		// deactivate it
-		// else if it's not in the active stack
-		// activate it
-		async _toggleMonitor(currentMonitor) {
-			try {
-				if (!this._proxy) {
-					throw new Error("No Proxy");
-				}
-				const isCurrentlyActive = this._isMonitorCurrentlyActive(currentMonitor);
-
-				// if currentlyActive -> turn off monitor and update list.
-				if (isCurrentlyActive) {
-					// remove from activelist
-					this._activeStack = this._activeStack.filter(
-						(actMonitor) => !this._shallowCompare(actMonitor, currentMonitor)
-					);
-				} else {
-					// add to activelist
-					this._activeStack.push(currentMonitor);
-				}
-
-				// Update monitors
-				this._updateMonitorConfig();
 			} catch (error) {
 				logError(error);
 			}
@@ -293,6 +296,36 @@ const DisplayMenu = GObject.registerClass(
 			});
 		}
 
+		// Takes a monitor and turns it on or off
+		// if monitor is currently in the active stack
+		// deactivate it
+		// else if it's not in the active stack
+		// activate it
+		async _toggleMonitor(currentMonitor) {
+			try {
+				if (!this._proxy) {
+					throw new Error("No Proxy");
+				}
+				const isCurrentlyActive = this._isMonitorCurrentlyActive(currentMonitor);
+
+				// if currentlyActive -> turn off monitor and update list.
+				if (isCurrentlyActive) {
+					// remove from activelist
+					this._activeStack = this._activeStack.filter(
+						(actMonitor) => !this._shallowCompare(actMonitor, currentMonitor)
+					);
+				} else {
+					// add to activelist
+					this._activeStack.push(currentMonitor);
+				}
+
+				// Update monitors
+				this._updateMonitorConfig();
+			} catch (error) {
+				logError(error);
+			}
+		}
+
 		async _setupMutterProxy() {
 			try {
 				this._proxy = null;
@@ -321,6 +354,7 @@ const DisplayMenu = GObject.registerClass(
 				return await myProxyPromise;
 			} catch (error) {
 				console.error(error);
+				return;
 			}
 		}
 
@@ -341,11 +375,10 @@ const DisplayMenu = GObject.registerClass(
 const MonyMonitorsIndicator = GObject.registerClass(
 	// The SystemIndicator class is the container for our ExampleToggle
 	class MonyMonitorsIndicator extends SystemIndicator {
-		constructor() {
+		constructor(extensionObject) {
 			super();
 
-			this._menuToggle = new DisplayMenu();
-
+			this._menuToggle = new DisplayMenu(extensionObject);
 			this.quickSettingsItems.push(this._menuToggle);
 		}
 	}
@@ -353,7 +386,7 @@ const MonyMonitorsIndicator = GObject.registerClass(
 
 export default class QuickSettingsExampleExtension extends Extension {
 	enable() {
-		this._indicator = new MonyMonitorsIndicator();
+		this._indicator = new MonyMonitorsIndicator(this);
 		Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
 	}
 
