@@ -39,7 +39,9 @@ const DisplayMenu = GObject.registerClass(
 			this.monitorList = null; // holds list of monitors for toggling on/off
 			this.mutterProxy = null; // This will be the DBus Proxy we use to communicate
 			this.currentMonitorConfig = null; // holds the monitor configuration from mutter
-			this.INTIIAL_MONITOR_CONFIG = null; // holds the initial configuration
+			this.originalMonitorConfig = null; // This will be set on initial setup
+
+			this.originalMonitorOrientation = new Map(); // Store monitor configuration based on serial
 
 			this.setupUI(); // Adds UI buttons
 			this.setup(); // Proxy + Configuration + Listeners + list of monitors
@@ -55,6 +57,7 @@ const DisplayMenu = GObject.registerClass(
 
 				// 2. Get monitors from D-BUS; this is the format we save in -> See dummy/mutterConfigResponse.json
 				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
+				this.originalMonitorConfig = JSON.parse(JSON.stringify(this.currentMonitorConfig)); // REVIEW -> Needed?
 
 				if (!this.currentMonitorConfig) {
 					throw new Error("Failed to get Monitor Configuration from DBus");
@@ -73,12 +76,26 @@ const DisplayMenu = GObject.registerClass(
 			}
 		}
 
+		saveConfiguration() {
+			this.currentMonitorConfig.logical_monitors.forEach((monitor) => {
+				const monitorProps = monitor[5];
+				const monitorSerial = monitorProps[monitorProps.length - 1];
+
+				this.originalMonitorOrientation.set(monitorSerial, monitor);
+			});
+		}
+
 		updateUI() {
 			if (this.monitorList) {
 				this.monitorList.removeAll();
 			}
 
 			if (this.currentMonitorConfig) {
+				this.checked =
+					this.currentMonitorConfig.monitors.length ===
+					this.currentMonitorConfig.logical_monitors.length;
+
+				this.saveConfiguration();
 				this.updateMonitors();
 			} else {
 				console.log(`No Monitors found?`);
@@ -87,6 +104,7 @@ const DisplayMenu = GObject.registerClass(
 		}
 
 		async onMainToggleClickHandler() {
+			// REFACTOR
 			if (this.checked) {
 				// Turn on all monitors
 				// await this.turnOnAllMonitors();
@@ -96,19 +114,32 @@ const DisplayMenu = GObject.registerClass(
 			}
 		}
 
-		convertLogicalMonitors(activeStack, dbusMonitors) {
-			const newLogicalMonitors = [];
-			const dbusMonitors = this.currentMonitorConfig.monitors;
+		async refreshConfig() {
+			try {
+				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
+				console.log(
+					"🚀 ~ DisplayMenu ~ refreshConfig ~ currentMonitorConfig:",
+					this.currentMonitorConfig
+				);
+			} catch (error) {
+				console.warn("Failed to refresh config");
+				console.error(error);
+			}
+		}
 
-			for (const monitor of activeStack) {
-				const [x, y, scale, transform, primary, monitorSpecs] = monitor;
+		convertLogicalMonitors() {
+			const newLogicalMonitors = [];
+			const { monitors, logical_monitors } = this.currentMonitorConfig;
+
+			for (const currMonitor of logical_monitors) {
+				const [x, y, scale, transform, primary, monitorSpecs] = currMonitor;
 
 				// Convert monitor specs to new format
 				const newMonitorSpecs = monitorSpecs.map((spec) => {
 					const [connector, vendor, product, serial] = spec;
 
 					// Find current mode ID from monitors array
-					const monitorInfo = dbusMonitors.find((m) => {
+					const monitorInfo = monitors.find((m) => {
 						const [info] = m;
 						const [mConnector, mVendor, mProduct, mSerial] = info;
 						return connector === mConnector;
@@ -147,7 +178,196 @@ const DisplayMenu = GObject.registerClass(
 				newLogicalMonitors.push(newMonitorConfig);
 			}
 
+			console.log(
+				"🚀 ~ DisplayMenu ~ convertLogicalMonitors ~ newLogicalMonitors:",
+				newLogicalMonitors
+			);
 			return newLogicalMonitors;
+		}
+
+		getResolutionMode(serial) {
+			let currentReso = null;
+			let preferredReso = null;
+			let highestReso = null;
+
+			for (let i = 0; i < this.currentMonitorConfig.monitors.length; i++) {
+				const monitor = array[i];
+				const properties = monitor[0];
+
+				// Find the matching monitor in configuration
+				if (properties[properties.length - 1] === serial) {
+					// iterate through and find either is-current, is-preferred or the highest resolution possible
+					for (let j = 0; j < monitor[1].length; j++) {
+						const modeInfo = monitor[1][j]; // ["1600x920@60.000", 1600, 920, 60, 1, [1], {}] <- Example of modeInfo
+
+						const lastVal = modeInfo[modeInfo.length - 1]; // ["1440x900@60.000",1440,900,60,1,[1],{"is-current": {}}], <- With lastVal
+
+						if (Object.hasOwn(lastVal, "is-current")) {
+							currentReso = modeInfo;
+						} else if (Object.hasOwn(lastVal, "is-preferred")) {
+							preferredReso = modeInfo;
+						} else if (j == 0) {
+							highestReso = modeInfo;
+						}
+					}
+				}
+			}
+
+			return {
+				currentReso,
+				preferredReso,
+				highestReso,
+			};
+		}
+
+		generateMonitorFromMutterConfig() {}
+
+		generateMonitorsFromLogicalMonitors() {
+			let newConfig = [];
+			let offset = {
+				x: 0,
+				y: 0,
+			};
+			const { logical_monitors } = this.currentMonitorConfig;
+
+			logical_monitors.forEach((monitor) => {
+				const [x, y, scale, transform, isPrimary, properties] = monitor;
+				const [connecter, brand, model, serial] = properties;
+
+				const { currentReso, preferredReso, highestReso } = getResolution(serial); // ["1440x900@60.000",1440,900,60,1,[1],{"is-current": {}}], <- Resolution Mode
+
+				const resolutionMode = currentReso || preferredReso || highestReso;
+				offset.x += resolutionMode[1];
+				offset.y += resolutionMode[2];
+				const gVariantProps = {
+					"width-in-pixels": new GLib.Variant("u", resolutionMode[1]),
+					"height-in-pixels": new GLib.Variant("u", resolutionMode[2]),
+					"refresh-rate": new GLib.Variant("d", resolutionMode[3]),
+				};
+
+				const physicalProps = [[connecter, resolutionMode[0] || "", gVariantProps]];
+
+				const tempMonitor = {
+					x,
+					y,
+					scale,
+					transform,
+					isPrimary,
+					physicalProps,
+				};
+
+				newConfig.push(tempMonitor);
+			});
+
+			return { logicalConfig: newConfig, offset };
+		}
+
+		generateNewMonitorConfig(toAdd, serialArr = []) {
+			try {
+				// Assuming we are adding
+				// 1. Take current logical_monitors and generate a new configuration to push via proxy
+				const { monitors } = this.currentMonitorConfig;
+				const { logicalConfig, offset } = this.generateMonitorsFromLogicalMonitors();
+				let oneTime = logicalConfig.length > 0 ? true : false;
+
+				// 2. Take incoming serialArr, iterate through and add monitor config
+				// TODO -> Add a way to get config from initial/previous full setup
+				const newMonitorConfig = serialArr.map((serial) => {
+					// find the relevant monitors config
+					const monitorConfig = monitors.find((m) => {
+						const serialIndex = m[0].length - 1;
+
+						if (m[0][serialIndex] === serial) return true;
+
+						return false;
+					});
+					const [connector, brand, model, serial] = monitorConfig[0];
+					const { currentReso, preferredReso, highestReso } = this.getResolutionMode(serial);
+
+					let resolutionModeInfo = null;
+
+					if (currentReso) {
+						resolutionModeInfo = currentReso;
+					} else if (preferredReso) {
+						resolutionModeInfo = preferredReso;
+					} else {
+						resolutionModeInfo = highestReso;
+					}
+
+					const physicalProps = {
+						"width-in-pixels": new GLib.Variant("u", resolutionModeInfo[1]),
+						"height-in-pixels": new GLib.Variant("u", resolutionModeInfo[2]),
+						"refresh-rate": new GLib.Variant("d", resolutionModeInfo[3]),
+					};
+
+					// build new config from monitor details + offset
+					const newMonitorConfig = [
+						offset.x,
+						offset.y,
+						1, // scale
+						0, // transformation
+						false, // primary flag setup later
+						[[connector, resolutionModeInfo[0], physicalProps]],
+					];
+				});
+
+				return [...logicalConfig, ...newMonitorConfig];
+			} catch (error) {
+				console.error("Failed to generateNewMonitorConfig");
+				console.error(error);
+				return;
+			}
+		}
+
+		testGen() {
+			const lvds1_connector = "LVDS1";
+			const lvds1_vendor = "1440x900@60.000"; // From your data, or use ""
+			const lvds1_properties = {
+				"width-in-pixels": new GLib.Variant("u", 1440),
+				"height-in-pixels": new GLib.Variant("u", 900),
+				"refresh-rate": new GLib.Variant("d", 60.0),
+			};
+
+			const logical_monitor_lvds1 = [
+				0, // x position
+				0, // y position
+				1.0, // scale
+				0, // transform (0 for normal)
+				true, // is_primary: true (let's make LVDS1 primary)
+				[
+					// array of physical monitors backing this logical monitor
+					[lvds1_connector, lvds1_vendor, lvds1_properties],
+				],
+			];
+
+			// ----- Configuration for LVDS2 (the currently active one) -----
+			const lvds2_connector = "LVDS2";
+			const lvds2_vendor = "1440x900@60.000"; // From your data, or use ""
+			const lvds2_properties = {
+				"width-in-pixels": new GLib.Variant("u", 1440), // Assuming we keep its 1440x900 mode
+				"height-in-pixels": new GLib.Variant("u", 900),
+				"refresh-rate": new GLib.Variant("d", 60.0),
+			};
+
+			const logical_monitor_lvds2 = [
+				1440, // x position (to the right of LVDS1, which is 1440px wide)
+				0, // y position
+				1.0, // scale
+				0, // transform (0 for normal)
+				false, // is_primary: false
+				[
+					// array of physical monitors backing this logical monitor
+					[lvds2_connector, lvds2_vendor, lvds2_properties],
+				],
+			];
+
+			// ----- Combine them into the final newMonitorConfig -----
+			const newMonitorConfig = [logical_monitor_lvds1, logical_monitor_lvds2];
+
+			if (this.testVal) {
+				return [logical_monitor_lvds1];
+			}
+			return newMonitorConfig;
 		}
 
 		async updateMonitorConfig() {
@@ -155,9 +375,9 @@ const DisplayMenu = GObject.registerClass(
 				if (!this.mutterProxy) {
 					throw new Error("No Proxy");
 				}
-
-				const { serial, monitors } = this.currentMonitorConfig;
-				const newMonitorConfig = this.convertLogicalMonitors(this.activeStack, monitors);
+				const { serial } = this.currentMonitorConfig;
+				let newMonitorConfig = this.testGen();
+				this.testVal = !this.testVal;
 
 				const params = new GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", [
 					serial, // u: serial
@@ -187,26 +407,10 @@ const DisplayMenu = GObject.registerClass(
 				});
 
 				// Refresh Serial
-				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
+				await this.refreshConfig();
 			} catch (error) {
 				console.error(error);
 			}
-		}
-
-		isMonitorCurrentlyActive(currSerial) {
-			const logicalMonitors = this.currentMonitorConfig.logical_monitors;
-
-			for (const testM of logicalMonitors) {
-				const tempDeets = testM[5][0];
-
-				const isEqual = tempDeets[tempDeets.length - 1] === currSerial;
-
-				if (isEqual) {
-					return true;
-				}
-			}
-
-			return false;
 		}
 
 		updateMonitors() {
@@ -259,23 +463,58 @@ const DisplayMenu = GObject.registerClass(
 				}
 
 				const isCurrentlyActive = this.isMonitorCurrentlyActive(currSerial);
-
+				// 1. Check if in logical_monitors
+				// 		T -> remove from logical_monitors
 				if (isCurrentlyActive) {
-					// REFACTOR -> No more activeStack
-					// remove from activeStack
-					this.activeStack = this.activeStack.filter(
-						(actMonitor) => !this.shallowCompare(actMonitor, currentMonitor)
-					);
+					this.disableMonitor(currSerial);
 				} else {
-					// add to activeStack
-					this.activeStack.push(currentMonitor);
+					//		F -> add
+					this.enableMonitor(currSerial);
 				}
 
 				// // Push new monitor configuration -> actual changes to displays
-				// this.updateMonitorConfig();
+				this.updateMonitorConfig();
 			} catch (error) {
 				console.error(error);
 			}
+		}
+
+		disableMonitor(monitorSerial) {
+			try {
+				// Filter out the removing monitor and reassign
+				this.currentMonitorConfig.logical_monitors =
+					this.currentMonitorConfig.logical_monitors.filter((monitor) => {
+						const tempDeets = monitor[5][0];
+						const tempSerial = tempDeets[tempDeets.length - 1];
+
+						if (tempSerial !== monitorSerial) {
+							return true;
+						}
+					});
+
+				return true;
+			} catch (error) {
+				console.error(error);
+				return false;
+			}
+		}
+
+		enableMonitor(monitorSerial) {}
+
+		isMonitorCurrentlyActive(currSerial) {
+			const logicalMonitors = this.currentMonitorConfig.logical_monitors;
+
+			for (const testM of logicalMonitors) {
+				const tempDeets = testM[5][0];
+
+				const isEqual = tempDeets[tempDeets.length - 1] === currSerial;
+
+				if (isEqual) {
+					return true;
+				}
+			}
+
+			return false;
 		}
 
 		shallowCompare(arr1, arr2) {
