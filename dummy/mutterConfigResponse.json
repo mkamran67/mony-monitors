@@ -1,0 +1,80 @@
+{
+	"serial": 1,
+	"monitors": [
+		[
+			["LVDS1", "MetaProducts Inc.", "MetaMonitor", "0xC0FFEE-1"],
+			[
+				["1600x920@60.000", 1600, 920, 60, 1, [1], {}],
+				[
+					"1440x900@60.000",
+					1440,
+					900,
+					60,
+					1,
+					[1],
+					{
+						"is-current": {}
+					}
+				],
+				["1024x768@60.000", 1024, 768, 60, 1, [1], {}],
+				[
+					"800x600@60.000",
+					800,
+					600,
+					60,
+					1,
+					[1],
+					{
+						"is-preferred": {}
+					}
+				]
+			],
+			{
+				"is-builtin": {},
+				"display-name": {}
+			}
+		],
+		[
+			["LVDS2", "MetaProducts Inc.", "MetaMonitor", "0xC0FFEE-2"],
+			[
+				["1600x920@60.000", 1600, 920, 60, 1, [1], {}],
+				[
+					"1440x900@60.000",
+					1440,
+					900,
+					60,
+					1,
+					[1],
+					{
+						"is-current": {}
+					}
+				],
+				["1024x768@60.000", 1024, 768, 60, 1, [1], {}],
+				[
+					"800x600@60.000",
+					800,
+					600,
+					60,
+					1,
+					[1],
+					{
+						"is-preferred": {}
+					}
+				]
+			],
+			{
+				"is-builtin": {},
+				"display-name": {}
+			}
+		]
+	],
+	"logical_monitors": [
+		[1440, 0, 1, 0, false, [["LVDS2", "MetaProducts Inc.", "MetaMonitor", "0xC0FFEE-2"]], {}],
+		[0, 0, 1, 0, true, [["LVDS1", "MetaProducts Inc.", "MetaMonitor", "0xC0FFEE-1"]], {}]
+	],
+	"properties": {
+		"renderer": {},
+		"layout-mode": {},
+		"legacy-ui-scaling-factor": {}
+	}
+}

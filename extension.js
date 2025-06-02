@@ -26,7 +26,7 @@ import { SystemIndicator } from "resource:///org/gnome/shell/ui/quickSettings.js
 
 const DisplayMenu = GObject.registerClass(
 	class DisplayMenu extends QuickSettings.QuickMenuToggle {
-		_init(extensionObject) {
+		_init() {
 			super._init({
 				title: _("Displays"),
 				subtitle: _("Monitors"),
@@ -35,74 +35,72 @@ const DisplayMenu = GObject.registerClass(
 			});
 
 			console.clear();
+			// All Variables used in app will be initialized here
+			this.monitorList = null; // holds list of monitors for toggling on/off
+			this.mutterProxy = null; // This will be the DBus Proxy we use to communicate
+			this.currentMonitorConfig = null; // holds the monitor configuration from mutter
+			this.INTIIAL_MONITOR_CONFIG = null; // holds the initial configuration
 
-			// Variables
-			this._monitorsChangedSignalId = 0;
-			this._settingsChangedId = 0;
-
-			// Add a header with an icon, title and optional subtitle.
-			this.menu.setHeader("monitor-pick-symbolic", _("Select Monitors"), _(""));
-
-			// Add a section of items to the menu
-			this._itemsSection = new PopupMenu.PopupMenuSection();
-
-			this._updateMonitors();
-
-			this.menu.addMenuItem(this._itemsSection);
-
-			this._setup();
+			this.setupUI(); // Adds UI buttons
+			this.setup(); // Proxy + Configuration + Listeners + list of monitors
 		}
 
-		async _onMainToggleClickHandler(isChecked) {
-			if (isChecked) {
-				// Turn on all monitors
-			} else {
-				// turn off all monitors
-			}
-		}
-
-		async _setup() {
-			// 1. Setup Mutter Proxy
-			await this._setupMutterProxy();
-			if (!this._proxy) {
-				console.error("Mutter D-bus proxy setup failed.");
-				process.exit(1);
-			}
-
-			// 2. Get Monitors -> save to an unchanging array
-			this._originalResources = await this.getResources();
-
-			if (!this._originalResources) {
-				console.error("Failed to fetch resources");
-				process.exit(1);
-			} else {
-				console.log("🚀 ~ DisplayMenu ~ _setup ~ _originalResources:", this._originalResources);
-			}
-
-			// 3. Update SetItems with new Monitor information
-			if (this._originalResources) {
-				this._monitorResources = { ...this._originalResources };
-				await this._updateMonitorsWithDBus();
-			}
-
-			// 4. Listeners
-			this.connect("notify::checked", () => {
-				if (this.checked) {
-					// 1. When CHECKED all monitors are ON
-					console.log(`Checked`);
-				} else {
-					// 2. When UNCHECK all monitors EXCEPT PRIMARY are OFF
-					console.log(`Unchecked`);
+		async setup() {
+			try {
+				// 1. Setup Mutter Proxy
+				await this.setupMutterProxy();
+				if (!this.mutterProxy) {
+					throw new Error("Mutter D-bus proxy setup failed.");
 				}
-			});
 
-			// TODO -> add a listener for monitor changes
+				// 2. Get monitors from D-BUS; this is the format we save in -> See dummy/mutterConfigResponse.json
+				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
+
+				if (!this.currentMonitorConfig) {
+					throw new Error("Failed to get Monitor Configuration from DBus");
+				}
+
+				// 3. Listeners
+				this.connect("notify::checked", () => this.onMainToggleClickHandler());
+
+				// TODO -> add a listener for updating this.currentMonitorConfig & this.updateUI
+
+				// 4. Setup UI -> Update
+				this.updateUI(); // Adds monitor list
+			} catch (error) {
+				console.error(error);
+				process.exit(1);
+			}
 		}
 
-		_convertLogicalMonitors(currentLogicalMonitors, monitors) {
-			const newLogicalMonitors = [];
+		updateUI() {
+			if (this.monitorList) {
+				this.monitorList.removeAll();
+			}
 
-			for (const monitor of currentLogicalMonitors) {
+			if (this.currentMonitorConfig) {
+				this.updateMonitors();
+			} else {
+				console.log(`No Monitors found?`);
+				console.error(this.currentMonitorConfig);
+			}
+		}
+
+		async onMainToggleClickHandler() {
+			if (this.checked) {
+				// Turn on all monitors
+				// await this.turnOnAllMonitors();
+			} else {
+				// turn off all monitors <- except primary
+				// await this.turnOffAllSecondaryMonitors();
+			}
+		}
+
+		convertLogicalMonitors(activeStack, dbusMonitors) {
+			const newLogicalMonitors = [];
+			const dbusMonitors = this.currentMonitorConfig.monitors;
+
+			for (const monitor of activeStack) {
 				const [x, y, scale, transform, primary, monitorSpecs] = monitor;
 
 				// Convert monitor specs to new format
@@ -110,7 +108,7 @@ const DisplayMenu = GObject.registerClass(
 					const [connector, vendor, product, serial] = spec;
 
 					// Find current mode ID from monitors array
-					const monitorInfo = monitors.find((m) => {
+					const monitorInfo = dbusMonitors.find((m) => {
 						const [info] = m;
 						const [mConnector, mVendor, mProduct, mSerial] = info;
 						return connector === mConnector;
@@ -152,15 +150,15 @@ const DisplayMenu = GObject.registerClass(
 			return newLogicalMonitors;
 		}
 
-		async _updateMonitorConfig() {
+		async updateMonitorConfig() {
 			try {
-				if (!this._proxy) {
+				if (!this.mutterProxy) {
 					throw new Error("No Proxy");
 				}
-				const { serial, monitors } = this._originalResources;
-				const newMonitorConfig = this._convertLogicalMonitors(this._activeStack, monitors);
 
-				// TODO -> add settings for temporary or permanent
+				const { serial, monitors } = this.currentMonitorConfig;
+				const newMonitorConfig = this.convertLogicalMonitors(this.activeStack, monitors);
+
 				const params = new GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", [
 					serial, // u: serial
 					1, // u: method (temporary)
@@ -170,7 +168,7 @@ const DisplayMenu = GObject.registerClass(
 
 				// a(iiduba(ssa{sv}))
 				await new Promise((resolve, reject) => {
-					this._proxy.call(
+					this.mutterProxy.call(
 						"ApplyMonitorsConfig",
 						params,
 						Gio.DBusCallFlags.NONE,
@@ -189,15 +187,19 @@ const DisplayMenu = GObject.registerClass(
 				});
 
 				// Refresh Serial
-				this._originalResources = await this.getResources();
+				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
 			} catch (error) {
-				logError(error);
+				console.error(error);
 			}
 		}
 
-		_isMonitorCurrentlyActive(monitor) {
-			for (const currMonitor of this._activeStack) {
-				const isEqual = this._shallowCompare(monitor, currMonitor);
+		isMonitorCurrentlyActive(currSerial) {
+			const logicalMonitors = this.currentMonitorConfig.logical_monitors;
+
+			for (const testM of logicalMonitors) {
+				const tempDeets = testM[5][0];
+
+				const isEqual = tempDeets[tempDeets.length - 1] === currSerial;
 
 				if (isEqual) {
 					return true;
@@ -207,14 +209,133 @@ const DisplayMenu = GObject.registerClass(
 			return false;
 		}
 
-		async getResources() {
+		updateMonitors() {
+			const logical_monitors = this.currentMonitorConfig.logical_monitors;
+
+			// Iterate and build MenuItems to add to the menu
+			this.currentMonitorConfig.monitors.forEach((currentMonitor, index) => {
+				// 1. Find if monitor is active
+				const currSerial = currentMonitor[0][currentMonitor[0].length - 1];
+				const currResolution = currentMonitor[1].find((m) => {
+					const hasProperty = Object.hasOwn(m[6], "is-current");
+
+					if (hasProperty) return true;
+				});
+				const currLogicalMonitor = logical_monitors.find((m) => {
+					const mDeets = m[5][0];
+					const mSerial = mDeets[mDeets.length - 1];
+					if (mSerial === currSerial) {
+						return true;
+					}
+				}); // if current monitor is in logicalMonitors
+
+				const isActive = currLogicalMonitor ? true : false;
+				const isPrimary = currLogicalMonitor[4]; // Primary Flag
+
+				const toggleListItemTitle = `${isPrimary ? "Primary" : "Monitor"} ${index + 1} : ${
+					currResolution[1]
+				}x${currResolution[2]}`;
+
+				// Create a toggle switch menu item
+				const menuItem = new PopupMenu.PopupSwitchMenuItem(toggleListItemTitle, isActive);
+
+				menuItem.connect("toggled", () => {
+					this.toggleMonitor(currSerial);
+				});
+
+				this.monitorList.addMenuItem(menuItem);
+			});
+
+			this.menu.addMenuItem(this.monitorList);
+		}
+
+		// Toggles the monitor ON or OFF
+		// if monitor is currently in the active stack -> deactivate it
+		// else if it's not in the active stack -> activate it
+		toggleMonitor(currSerial) {
 			try {
-				if (!this._proxy) {
+				if (!this.mutterProxy) {
+					throw new Error("No Proxy");
+				}
+
+				const isCurrentlyActive = this.isMonitorCurrentlyActive(currSerial);
+
+				if (isCurrentlyActive) {
+					// REFACTOR -> No more activeStack
+					// remove from activeStack
+					this.activeStack = this.activeStack.filter(
+						(actMonitor) => !this.shallowCompare(actMonitor, currentMonitor)
+					);
+				} else {
+					// add to activeStack
+					this.activeStack.push(currentMonitor);
+				}
+
+				// // Push new monitor configuration -> actual changes to displays
+				// this.updateMonitorConfig();
+			} catch (error) {
+				console.error(error);
+			}
+		}
+
+		shallowCompare(arr1, arr2) {
+			if (arr1.length !== arr2.length) {
+				return false;
+			}
+			for (let i = 0; i < arr1.length; i++) {
+				if (arr1[i] !== arr2[i]) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		setupUI() {
+			// Add a header with an icon, title and optional subtitle.
+			this.menu.setHeader("monitor-pick-symbolic", _("Select Monitors"), _(""));
+
+			// Add a section of items to the menu
+			this.monitorList = new PopupMenu.PopupMenuSection();
+		}
+
+		async setupMutterProxy() {
+			try {
+				const myProxyPromise = new Promise((resolve, reject) => {
+					Gio.DBusProxy.new_for_bus(
+						Gio.BusType.SESSION,
+						Gio.DBusProxyFlags.NONE,
+						null,
+						"org.gnome.Mutter.DisplayConfig",
+						"/org/gnome/Mutter/DisplayConfig",
+						"org.gnome.Mutter.DisplayConfig",
+						null,
+						(source, result) => {
+							try {
+								this.mutterProxy = Gio.DBusProxy.new_for_bus_finish(result);
+								resolve(this.mutterProxy);
+							} catch (e) {
+								console.log("file: extension.js:275 -> e:", e);
+								reject(e);
+							}
+						}
+					);
+				});
+
+				return await myProxyPromise;
+			} catch (error) {
+				console.error(error);
+				return;
+			}
+		}
+
+		async getCurrentMonitorConfig() {
+			try {
+				if (!this.mutterProxy) {
 					throw new Error("No Proxy");
 				}
 
 				return new Promise((resolve, reject) => {
-					this._proxy.call(
+					this.mutterProxy.call(
 						"GetCurrentState",
 						null,
 						Gio.DBusCallFlags.NONE,
@@ -233,17 +354,14 @@ const DisplayMenu = GObject.registerClass(
 					);
 				});
 			} catch (error) {
-				logError(error);
+				console.error(error);
 			}
 		}
 
-		// This should run only once, later we update with stored values.
-		async _updateMonitorsWithDBus() {
+		async updateMonitorsWithDBus() {
 			try {
-				this._itemsSection.removeAll();
-
-				const { logical_monitors, monitors } = this._originalResources;
-				this._activeStack = [...logical_monitors]; // inital save of active monitors
+				const { logical_monitors, monitors } = this.currentMonitorConfig;
+				this.activeStack = [...logical_monitors]; // inital save of active monitors
 
 				// For now lets use logical_monitors and store them
 				logical_monitors.forEach((monitor, index) => {
@@ -257,117 +375,15 @@ const DisplayMenu = GObject.registerClass(
 						isActive
 					);
 
-					menuItem.connect("toggled", async () => {
-						await this._toggleMonitor(monitor); // This will turn off the monitor and keep the button there
+					menuItem.connect("toggled", () => {
+						this.toggleMonitor(monitor); // This will turn off the monitor and keep the button there
 					});
 
-					this._itemsSection.addMenuItem(menuItem);
+					this.monitorList.addMenuItem(menuItem);
 				});
 			} catch (error) {
 				console.log("file: extension.js:97 -> error:", error);
 			}
-		}
-
-		_updateMonitors() {
-			// TODO -> DELETE
-			// Clear Existing items -> Dummy Monitors really...
-			this._itemsSection.removeAll();
-
-			// Get monitors from Main.layoutManager
-			const monitors = Main.layoutManager.monitors;
-			const primaryMonitorIndex = global.display.get_primary_monitor();
-
-			monitors.forEach((monitor, index) => {
-				// const isActive = monitor.geometry.width
-				const isActive = monitor.width > 0 && monitor.height > 0;
-				const isPrimary = primaryMonitorIndex == index;
-
-				// Create a toggle switch menu item
-				const menuItem = new PopupMenu.PopupSwitchMenuItem(
-					`${isPrimary ? "Primary" : "Monitor"} ${index + 1}: ${monitor.width}x${monitor.height} `,
-					isActive
-				);
-
-				menuItem.connect("toggled", async () => {
-					await this._toggleMonitor(index, !isActive);
-				});
-
-				this._itemsSection.addMenuItem(menuItem);
-			});
-		}
-
-		// Takes a monitor and turns it on or off
-		// if monitor is currently in the active stack
-		// deactivate it
-		// else if it's not in the active stack
-		// activate it
-		async _toggleMonitor(currentMonitor) {
-			try {
-				if (!this._proxy) {
-					throw new Error("No Proxy");
-				}
-				const isCurrentlyActive = this._isMonitorCurrentlyActive(currentMonitor);
-
-				// if currentlyActive -> turn off monitor and update list.
-				if (isCurrentlyActive) {
-					// remove from activelist
-					this._activeStack = this._activeStack.filter(
-						(actMonitor) => !this._shallowCompare(actMonitor, currentMonitor)
-					);
-				} else {
-					// add to activelist
-					this._activeStack.push(currentMonitor);
-				}
-
-				// Update monitors
-				this._updateMonitorConfig();
-			} catch (error) {
-				logError(error);
-			}
-		}
-
-		async _setupMutterProxy() {
-			try {
-				this._proxy = null;
-
-				const myProxyPromise = new Promise((resolve, reject) => {
-					Gio.DBusProxy.new_for_bus(
-						Gio.BusType.SESSION,
-						Gio.DBusProxyFlags.NONE,
-						null,
-						"org.gnome.Mutter.DisplayConfig",
-						"/org/gnome/Mutter/DisplayConfig",
-						"org.gnome.Mutter.DisplayConfig",
-						null,
-						(source, result) => {
-							try {
-								this._proxy = Gio.DBusProxy.new_for_bus_finish(result);
-								resolve(this._proxy);
-							} catch (e) {
-								console.log("file: extension.js:275 -> e:", e);
-								reject(e);
-							}
-						}
-					);
-				});
-
-				return await myProxyPromise;
-			} catch (error) {
-				console.error(error);
-				return;
-			}
-		}
-
-		_shallowCompare(arr1, arr2) {
-			if (arr1.length !== arr2.length) {
-				return false;
-			}
-			for (let i = 0; i < arr1.length; i++) {
-				if (arr1[i] !== arr2[i]) {
-					return false;
-				}
-			}
-			return true;
 		}
 	}
 );
