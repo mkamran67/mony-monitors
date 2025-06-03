@@ -1,6 +1,6 @@
 {
 	"watch": ["."],
 	"ext": "js,json,css,html",
-	"exec": "clear && dbus-run-session -- env MUTTER_DEBUG_NUM_DUMMY_MONITORS=2 MUTTER_DEBUG_DUMMY_MONITOR_SCALES=1,1 MUTTER_DEBUG_DUMMY_MONITOR_LAYOUTS=1920x1080,1920x1080 gnome-shell --nested --wayland",
+	"exec": "clear && dbus-run-session -- env MUTTER_DEBUG_NUM_DUMMY_MONITORS=2 MUTTER_DEBUG_DUMMY_MONITOR_SCALES=1,1 gnome-shell --nested --wayland",
 	"delay": "1000"
 }
