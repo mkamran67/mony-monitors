@@ -35,13 +35,14 @@ const DisplayMenu = GObject.registerClass(
 			});
 
 			console.clear();
-			// All Variables used in app will be initialized here
+			// All Variables used in app will be initialized here -> it's a -> new PopupMenu.PopupMenuSection();
 			this.monitorList = null; // holds list of monitors for toggling on/off
 			this.mutterProxy = null; // This will be the DBus Proxy we use to communicate
 			this.currentMonitorConfig = null; // holds the monitor configuration from mutter
 			this.originalMonitorConfig = null; // This will be set on initial setup
 			this.chooseHighestRes = null; // TODO -> Add settings schema + value
 
+			// REVIEW -> NEEDED ? refactor
 			this.originalMonitorOrientation = new Map(); // Store monitor configuration based on serial
 
 			this.setupUI(); // Adds UI buttons
@@ -66,18 +67,32 @@ const DisplayMenu = GObject.registerClass(
 
 				// 2. Get monitors from D-BUS; this is the format we save in -> See dummy/mutterConfigResponse.json
 				await this.refreshConfig();
-				this.originalMonitorConfig = JSON.parse(JSON.stringify(this.currentMonitorConfig)); // REVIEW -> Needed?
 
 				// 3. Listeners
 				this.connect("notify::checked", () => this.onMainToggleClickHandler());
 
-				// TODO -> add a listener for updating this.currentMonitorConfig & this.updateUI
-
+				this._monitorsChangedSignalId = this.mutterProxy.connect(
+					"g-signal",
+					async (proxy, senderName, signalName, params) =>
+						await this.hangleMonitorsChangedSignal(signalName)
+				);
 				// 4. Setup UI -> Update
 				this.updateUI(); // Adds monitor list
 			} catch (error) {
 				console.error(error);
 				process.exit(1);
+			}
+		}
+
+		async hangleMonitorsChangedSignal(signalName) {
+			try {
+				if (signalName === "MonitorsChanged") {
+					console.log("MonitorsChanged signal received!");
+					await this.refreshConfig();
+					// this.updateUI();
+				}
+			} catch (error) {
+				console.error(error);
 			}
 		}
 
@@ -109,18 +124,14 @@ const DisplayMenu = GObject.registerClass(
 		}
 
 		updateUI() {
-			if (this.monitorList) {
-				this.monitorList.removeAll();
-			}
-
-			if (this.currentMonitorConfig) {
+			if (this.currentMonitorConfig.monitors && this.currentMonitorConfig.monitors.length > 0) {
 				this.checked =
 					this.currentMonitorConfig.monitors.length ===
 					this.currentMonitorConfig.logical_monitors.length;
 
-				this.updateMonitors();
+				this.updateMonitorToggleList();
 			} else {
-				console.log(`No Monitors found?`);
+				console.error(`No Monitors found!`);
 				console.error(this.currentMonitorConfig);
 			}
 		}
@@ -129,16 +140,17 @@ const DisplayMenu = GObject.registerClass(
 			// REFACTOR
 			if (this.checked) {
 				// Turn on all monitors
-				// await this.turnOnAllMonitors();
+				await this.enableAllMonitors();
 			} else {
 				// turn off all monitors <- except primary
-				// await this.turnOffAllSecondaryMonitors();
+				await this.disableAllExceptPrimary();
 			}
 		}
 
 		async refreshConfig() {
 			try {
 				this.currentMonitorConfig = await this.getCurrentMonitorConfig();
+				this.originalMonitorConfig = JSON.parse(JSON.stringify(this.currentMonitorConfig)); // REVIEW -> Needed?
 
 				if (!this.currentMonitorConfig) {
 					throw new Error("Failed to get Monitor Configuration from DBus");
@@ -219,7 +231,6 @@ const DisplayMenu = GObject.registerClass(
 					const lastVal = modeInfo[modeInfo.length - 1]; // ["1440x900@60.000",1440,900,60,1,[1],{"is-current": {}}], <- With lastVal
 
 					if (Object.hasOwn(lastVal, "is-current")) {
-						console.log(`returning`);
 						return modeInfo;
 					}
 				}
@@ -292,10 +303,6 @@ const DisplayMenu = GObject.registerClass(
 
 				const [connector, brand, model, serial] = monitorConfig[0];
 				const resolutionModeInfo = this.getResolutionMode(serial);
-				console.log(
-					"🚀 ~ DisplayMenu ~ newMonitorConfig ~ resolutionModeInfo:",
-					resolutionModeInfo
-				);
 
 				const physicalProps = {
 					"width-in-pixels": new GLib.Variant("u", 1440),
@@ -369,7 +376,7 @@ const DisplayMenu = GObject.registerClass(
 								proxy.call_finish(result);
 								resolve();
 							} catch (e) {
-								console.log("file: extension.js:102 -> e:", e);
+								console.error(e);
 								reject(e);
 							}
 						}
@@ -383,29 +390,18 @@ const DisplayMenu = GObject.registerClass(
 			}
 		}
 
-		updateMonitors() {
-			const { logical_monitors } = this.currentMonitorConfig;
+		updateMonitorToggleList() {
+			if (this.monitorList) {
+				this.monitorList.removeAll();
+			}
 
 			// Iterate and build MenuItems to add to the menu
 			this.currentMonitorConfig.monitors.forEach((currentMonitor, index) => {
 				const currSerial = currentMonitor[0][currentMonitor[0].length - 1]; // Serial of monitor
 
-				const currResolution = currentMonitor[1].find((m) => {
-					const hasProperty = Object.hasOwn(m[6], "is-current");
-
-					if (hasProperty) return true;
-				}); // resolution modeInfo
-
-				const currLogicalMonitor = logical_monitors.find((m) => {
-					const mDeets = m[5][0];
-					const mSerial = mDeets[mDeets.length - 1];
-					if (mSerial === currSerial) {
-						return true;
-					}
-				}); // if current monitor is in logicalMonitors
-
-				const isActive = currLogicalMonitor ? true : false;
-				const isPrimary = currLogicalMonitor[4]; // Primary Flag
+				const currResolution = this.getResolutionMode(currSerial); // get resolution mode
+				const { isActive, info } = this.isMonitorCurrentlyActive(currSerial);
+				const isPrimary = info[4]; // Primary flag
 
 				const toggleListItemTitle = `${isPrimary ? "Primary" : "Monitor"} ${index + 1} : ${
 					currResolution[1]
@@ -413,6 +409,7 @@ const DisplayMenu = GObject.registerClass(
 
 				// Create a toggle switch menu item
 				const menuItem = new PopupMenu.PopupSwitchMenuItem(toggleListItemTitle, isActive);
+				menuItem.reactive = !isPrimary;
 
 				menuItem.connect("toggled", () => {
 					this.toggleMonitor(currSerial);
@@ -430,11 +427,10 @@ const DisplayMenu = GObject.registerClass(
 					throw new Error("No Proxy");
 				}
 
-				const isCurrentlyActive = this.isMonitorCurrentlyActive(currSerial);
-				console.log("🚀 ~ DisplayMenu ~ toggleMonitor ~ isCurrentlyActive:", isCurrentlyActive);
+				const { isActive } = this.isMonitorCurrentlyActive(currSerial);
 				// 1. Check if in logical_monitors
 				// 		T -> remove from logical_monitors
-				if (isCurrentlyActive) {
+				if (isActive) {
 					this.disableMonitor(currSerial);
 				} else {
 					//		F -> add
@@ -459,9 +455,58 @@ const DisplayMenu = GObject.registerClass(
 			}
 		}
 
+		getNonActiveMonitorSerials() {
+			const result = this.currentMonitorConfig.monitors.reduce((acc, monitor) => {
+				const serial = monitor[0][monitor[0].length - 1];
+
+				const { isActive } = this.isMonitorCurrentlyActive(serial);
+
+				if (!isActive) {
+					acc.push(serial);
+				}
+
+				return acc;
+			}, []);
+
+			return result;
+		}
+		async enableAllMonitors() {
+			try {
+				const nonActiveMonitors = this.getNonActiveMonitorSerials();
+				if (nonActiveMonitors.length > 0) {
+					const newMonitorConfig = this.generateNewMonitorConfig(true, nonActiveMonitors);
+					await this.updateMonitorConfig(newMonitorConfig);
+				} else {
+					console.warn("No Inactive monitors to disable.");
+				}
+			} catch (error) {
+				console.error(error);
+			}
+		}
 		async disableAllExceptPrimary() {
 			try {
-				// TODO -> After the primary bug
+				const nonPrimarySerials = this.currentMonitorConfig.logical_monitors.reduce(
+					(acc, monitor) => {
+						const isPrimary = monitor[4];
+
+						if (!isPrimary) {
+							const monitorSpec = monitor[5][0];
+							const serial = monitorSpec[monitorSpec.length - 1];
+
+							acc.push(serial);
+						}
+
+						return acc;
+					},
+					[]
+				);
+
+				if (nonPrimarySerials.length > 0) {
+					const newMonitorConfig = this.generateNewMonitorConfig(false, nonPrimarySerials);
+					await this.updateMonitorConfig(newMonitorConfig);
+				} else {
+					console.warn("No non-primary monitors to disable.");
+				}
 			} catch (error) {
 				console.error(error);
 				return;
@@ -488,11 +533,11 @@ const DisplayMenu = GObject.registerClass(
 				const isEqual = tempDeets[tempDeets.length - 1] === currSerial;
 
 				if (isEqual) {
-					return true;
+					return { isActive: true, info: tempDeets };
 				}
 			}
 
-			return false;
+			return { isActive: false, info: null };
 		}
 
 		async setupMutterProxy() {
@@ -511,7 +556,7 @@ const DisplayMenu = GObject.registerClass(
 								this.mutterProxy = Gio.DBusProxy.new_for_bus_finish(result);
 								resolve(this.mutterProxy);
 							} catch (e) {
-								console.log("file: extension.js:275 -> e:", e);
+								console.error(e);
 								reject(e);
 							}
 						}
@@ -580,7 +625,7 @@ const DisplayMenu = GObject.registerClass(
 					this.monitorList.addMenuItem(menuItem);
 				});
 			} catch (error) {
-				console.log("file: extension.js:97 -> error:", error);
+				console.error(error);
 			}
 		}
 	}
