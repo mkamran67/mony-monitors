@@ -89,7 +89,8 @@ const DisplayMenu = GObject.registerClass(
 				if (signalName === "MonitorsChanged") {
 					console.log("MonitorsChanged signal received!");
 					await this.refreshConfig();
-					// this.updateUI();
+					// FIXME -> Bugged, will remove the toggle list even tho the monitor is there
+					this.updateUI();
 				}
 			} catch (error) {
 				console.error(error);

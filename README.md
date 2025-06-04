@@ -25,3 +25,7 @@ Share your logs if you encounter issues/bugs
 `journalctl -f -o cat /usr/bin/gnome-shell`
 
 For any questions or feedback, please contact us at monymonitor@gmail.com
+
+## TODOs
+
+[] fix issues with disabling/toggling monitors

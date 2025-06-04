@@ -4,5 +4,6 @@
 	"uuid": "monymonitor@gmail.com",
 	"shell-version": ["46"],
 	"version": "1.0",
-	"settings-schema": "org.gnome.shell.extensions.monymonitors"
+	"settings-schema": "org.gnome.shell.extensions.monymonitors",
+	"repository": "https://github.com/mkamran67/mony-monitors"
 }
